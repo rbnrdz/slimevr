@@ -108,25 +108,49 @@ void BMI160Sensor::motionSetup() {
 
     m_Logger.info("Connected to BMI160 (reported device ID 0x%02x) at address 0x%02x", imu.getDeviceID(), addr);
 
+    gyroTempCalibrator = new GyroTemperatureCalibrator(
+        SlimeVR::Configuration::CalibrationConfigType::BMI160,
+        sensorId,
+        BMI160_GYRO_TYPICAL_SENSITIVITY_LSB,
+        BMI160_TEMP_CALIBRATION_REQUIRED_SAMPLES_PER_STEP
+    );
+    
     // Initialize the configuration
     {
         SlimeVR::Configuration::CalibrationConfig sensorCalibration = configuration.getCalibration(sensorId);
-        // If no compatible calibration data is found, the calibration data will just be zero-ed out
         switch (sensorCalibration.type) {
         case SlimeVR::Configuration::CalibrationConfigType::BMI160:
             m_Calibration = sensorCalibration.data.bmi160;
             break;
 
         case SlimeVR::Configuration::CalibrationConfigType::NONE:
-            m_Logger.warn("No calibration data found for sensor %d, ignoring...", sensorId);
+            m_Logger.warn("No calibration data found for sensor %d", sensorId);
             m_Logger.info("Calibration is advised");
             break;
 
         default:
-            m_Logger.warn("Incompatible calibration data found for sensor %d, ignoring...", sensorId);
+            m_Logger.warn("Incompatible calibration data found for sensor %d", sensorId);
             m_Logger.info("Calibration is advised");
         }
     }
+
+    #if BMI160_USE_TEMPCAL
+        gyroTempCalibrator->loadConfig(BMI160_GYRO_TYPICAL_SENSITIVITY_LSB);
+        if (gyroTempCalibrator->config.hasCoeffs) {
+            float GOxyzAtTemp[3];
+            gyroTempCalibrator->approximateOffset(m_Calibration.temperature, GOxyzAtTemp);
+            for (uint32_t i = 0; i < 3; i++) {
+                GOxyzStaticTempCompensated[i] = m_Calibration.G_off[i] - GOxyzAtTemp[i];
+            }
+        }
+    #endif
+    
+    imu.setFIFOHeaderModeEnabled(true);
+    imu.setGyroFIFOEnabled(true);
+    imu.setAccelFIFOEnabled(true);
+    #if !USE_6_AXIS
+        imu.setMagFIFOEnabled(true);
+    #endif
 
     int16_t ax, ay, az;
     getRemappedAcceleration(&ax, &ay, &az);
@@ -145,6 +169,11 @@ void BMI160Sensor::motionSetup() {
 
         ledManager.off();
     }
+    else {
+        delay(4);
+        imu.resetFIFO();
+        delay(2);
+    }
 
     {
         #define IS_INT16_CLIPPED(value) (value == INT16_MIN || value == INT16_MAX)
@@ -157,67 +186,32 @@ void BMI160Sensor::motionSetup() {
                 ax, ay, az, (float)az / BMI160_ACCEL_TYPICAL_SENSITIVITY_LSB);
             m_Logger.warn("---------------- WARNING -----------------");
         }
-    }
-
-    // allocate temperature memory after calibration because OOM
-    gyroTempCalibrator = new GyroTemperatureCalibrator(
-        SlimeVR::Configuration::CalibrationConfigType::BMI160,
-        sensorId,
-        BMI160_GYRO_TYPICAL_SENSITIVITY_LSB,
-        BMI160_TEMP_CALIBRATION_REQUIRED_SAMPLES_PER_STEP
-    );
-
-    #if BMI160_USE_TEMPCAL
-        gyroTempCalibrator->loadConfig(BMI160_GYRO_TYPICAL_SENSITIVITY_LSB);
-        if (gyroTempCalibrator->config.hasCoeffs) {
-            float GOxyzAtTemp[3];
-            gyroTempCalibrator->approximateOffset(m_Calibration.temperature, GOxyzAtTemp);
-            for (uint32_t i = 0; i < 3; i++) {
-                GOxyzStaticTempCompensated[i] = m_Calibration.G_off[i] - GOxyzAtTemp[i];
-            }
-        }
-    #endif
-
-    #if BMI160_USE_SENSCAL
-    {
-        String localDevice = WiFi.macAddress();
-        for (auto const& offsets : sensitivityOffsets) {
-            if (!localDevice.equals(offsets.mac)) continue;
-            if (offsets.sensorId != sensorId) continue;
-
-            #define BMI160_CALCULATE_SENSITIVTY_MUL(degrees) (1.0 / (1.0 - ((degrees)/(360.0 * offsets.spins))))
-
-            gscaleX = BMI160_GSCALE * BMI160_CALCULATE_SENSITIVTY_MUL(offsets.x);
-            gscaleY = BMI160_GSCALE * BMI160_CALCULATE_SENSITIVTY_MUL(offsets.y);
-            gscaleZ = BMI160_GSCALE * BMI160_CALCULATE_SENSITIVTY_MUL(offsets.z);
-            m_Logger.debug("Custom sensitivity offset enabled: %s %s",
-                offsets.mac,
-                offsets.sensorId == SENSORID_PRIMARY ? "primary" : "aux"
-            );
-        }
-    }
-    #endif
+    } 
 
     isGyroCalibrated = hasGyroCalibration();
     isAccelCalibrated = hasAccelCalibration();
+    isSensCalCalibrated = hasSensCalibration();
     #if !USE_6_AXIS
     isMagCalibrated = hasMagCalibration();
     #endif
     m_Logger.info("Calibration data for gyro: %s", isGyroCalibrated ? "found" : "not found");
     m_Logger.info("Calibration data for accel: %s", isAccelCalibrated ? "found" : "not found");
+    #if BMI160_USE_SENSCAL
+    m_Logger.info("Calibration data for senscal: %s", isSensCalCalibrated ? "found" : "not found");
+    #endif
     #if !USE_6_AXIS
     m_Logger.info("Calibration data for mag: %s", isMagCalibrated ? "found" : "not found");
     #endif
 
-    imu.setFIFOHeaderModeEnabled(true);
-    imu.setGyroFIFOEnabled(true);
-    imu.setAccelFIFOEnabled(true);
-    #if !USE_6_AXIS
-        imu.setMagFIFOEnabled(true);
+    #if BMI160_USE_SENSCAL
+    {
+        gscaleX = BMI160_GSCALE * m_Calibration.G_Sens[0];
+        gscaleY = BMI160_GSCALE * m_Calibration.G_Sens[1];
+        gscaleZ = BMI160_GSCALE * m_Calibration.G_Sens[2];
+        m_Logger.debug("Gyro Sens: %f, %f, %f", m_Calibration.G_Sens[0], m_Calibration.G_Sens[1], m_Calibration.G_Sens[2]);
+    }
     #endif
-    delay(4);
-    imu.resetFIFO();
-    delay(2);
+
 
     uint8_t err;
     if (imu.getErrReg(&err)) {
@@ -248,92 +242,38 @@ void BMI160Sensor::motionLoop() {
     #endif
 
     {
-        uint32_t now = micros();
-        constexpr uint32_t BMI160_TARGET_SYNC_INTERVAL_MICROS = 25000;
-        uint32_t elapsed = now - lastClockPollTime;
-        if (elapsed >= BMI160_TARGET_SYNC_INTERVAL_MICROS) {
-            lastClockPollTime = now - (elapsed - BMI160_TARGET_SYNC_INTERVAL_MICROS);
+        #if BMI160_DEBUG
 
-            const uint32_t nextLocalTime1 = micros();
-            uint32_t rawSensorTime;
-            if (imu.getSensorTime(&rawSensorTime)) {
-                localTime0 = localTime1;
-                localTime1 = nextLocalTime1;
-                syncLatencyMicros = (micros() - localTime1) * 0.3;
-                sensorTime0 = sensorTime1;
-                sensorTime1 = rawSensorTime;
-                if ((sensorTime0 > 0 || localTime0 > 0) && (sensorTime1 > 0 || sensorTime1 > 0)) {
-                    // handle 24 bit overflow
-                    double remoteDt =
-                        sensorTime1 >= sensorTime0 ?
-                        sensorTime1 - sensorTime0 :
-                        (sensorTime1 + 0xFFFFFF) - sensorTime0;
-                    double localDt = localTime1 - localTime0;
-                    const double nextSensorTimeRatio = localDt / (remoteDt * BMI160_TIMESTAMP_RESOLUTION_MICROS);
-
-                    // handle sdk lags and time travel
-                    if (round(nextSensorTimeRatio) == 1.0) {
-                        sensorTimeRatio = nextSensorTimeRatio;
-
-                        if (round(sensorTimeRatioEma) != 1.0) {
-                            sensorTimeRatioEma = sensorTimeRatio;
-                        }
-
-                        constexpr double EMA_APPROX_SECONDS = 1.0;
-                        constexpr uint32_t EMA_SAMPLES = (EMA_APPROX_SECONDS / 3 * 1e6) / BMI160_TARGET_SYNC_INTERVAL_MICROS;
-                        sensorTimeRatioEma -= sensorTimeRatioEma / EMA_SAMPLES;
-                        sensorTimeRatioEma += sensorTimeRatio / EMA_SAMPLES;
-
-                        sampleDtMicros = BMI160_ODR_GYR_MICROS * sensorTimeRatioEma;
-                        samplesSinceClockSync = 0;
-                    }
-                }
-            }
-
-            getTemperature(&temperature);
-            optimistic_yield(100);
-        }
-    }
-
-    {
-        uint32_t now = micros();
-        constexpr uint32_t BMI160_TARGET_POLL_INTERVAL_MICROS = 6000;
-        uint32_t elapsed = now - lastPollTime;
-        if (elapsed >= BMI160_TARGET_POLL_INTERVAL_MICROS) {
-            lastPollTime = now - (elapsed - BMI160_TARGET_POLL_INTERVAL_MICROS);
-
-            #if BMI160_DEBUG
                 uint32_t start = micros();
                 readFIFO();
-                uint32_t end = micros();
-                cpuUsageMicros += end - start;
-                if (!lastCpuUsagePrinted) lastCpuUsagePrinted = end;
-                if (end - lastCpuUsagePrinted > 1e6) {
-                    bool restDetected = sfusion.getRestDetected();
-
-                    m_Logger.debug("readFIFO took %0.4f ms, read gyr %i acc %i mag %i rest %i resets %i readerrs %i type " SENSOR_FUSION_TYPE_STRING,
-                        ((float)cpuUsageMicros / 1e3f),
-                        gyrReads,
-                        accReads,
-                        magReads,
-                        restDetected,
-                        numFIFODropped,
-                        numFIFOFailedReads
-                    );
-
-                    cpuUsageMicros = 0;
-                    lastCpuUsagePrinted = end;
-                    gyrReads = 0;
-                    accReads = 0;
-                    magReads = 0;
+                if (readFIFO()) {
+                    uint32_t end = micros();
+                    cpuUsageMicros += end - start;
+                    if (!lastCpuUsagePrinted) lastCpuUsagePrinted = end;
+                    if (end - lastCpuUsagePrinted > 1e6) {
+                        bool restDetected = sfusion.getRestDetected();
+                        m_Logger.debug("readFIFO took %0.4f ms, read gyr %i acc %i mag %i rest %i resets %i readerrs %i type " SENSOR_FUSION_TYPE_STRING,
+                            ((float)cpuUsageMicros / 1e3f),
+                            gyrReads,
+                            accReads,
+                            magReads,
+                            restDetected,
+                            numFIFODropped,
+                            numFIFOFailedReads
+                        );
+                        cpuUsageMicros = 0;
+                        lastCpuUsagePrinted = end;
+                        gyrReads = 0;
+                        accReads = 0;
+                        magReads = 0;
+                    }
                 }
-            #else
-                readFIFO();
-            #endif
-            optimistic_yield(100);
-            if (!sfusion.isUpdated()) return;
-            sfusion.clearUpdated();
-        }
+        #else
+            readFIFO();
+        #endif
+        optimistic_yield(100);
+        if (!sfusion.isUpdated()) return;
+        sfusion.clearUpdated();
     }
 
     {
@@ -374,28 +314,88 @@ void BMI160Sensor::motionLoop() {
     }
 }
 
-void BMI160Sensor::readFIFO() {
+void BMI160Sensor::getTimeFromIMU() {
+	uint32_t now = micros();
+	constexpr uint32_t BMI160_TARGET_SYNC_INTERVAL_MICROS = 25000;
+	uint32_t elapsed = now - lastClockPollTime;
+	if (elapsed >= BMI160_TARGET_SYNC_INTERVAL_MICROS) {
+		lastClockPollTime = now - (elapsed - BMI160_TARGET_SYNC_INTERVAL_MICROS);
+
+		const uint32_t nextLocalTime1 = micros();
+		uint32_t rawSensorTime;
+		if (imu.getSensorTime(&rawSensorTime)) {
+			localTime0 = localTime1;
+			localTime1 = nextLocalTime1;
+			syncLatencyMicros = (micros() - localTime1) * 0.3;
+			sensorTime0 = sensorTime1;
+			sensorTime1 = rawSensorTime;
+			if ((sensorTime0 > 0 || localTime0 > 0)
+				&& (sensorTime1 > 0 || sensorTime1 > 0)) {
+				// handle 24 bit overflow
+				double remoteDt = sensorTime1 >= sensorTime0
+									? sensorTime1 - sensorTime0
+									: (sensorTime1 + 0xFFFFFF) - sensorTime0;
+				double localDt = localTime1 - localTime0;
+				const double nextSensorTimeRatio
+					= localDt / (remoteDt * BMI160_TIMESTAMP_RESOLUTION_MICROS);
+
+				// handle sdk lags and time travel
+				if (round(nextSensorTimeRatio) == 1.0) {
+					sensorTimeRatio = nextSensorTimeRatio;
+
+					if (round(sensorTimeRatioEma) != 1.0) {
+						sensorTimeRatioEma = sensorTimeRatio;
+					}
+
+					constexpr double EMA_APPROX_SECONDS = 1.0;
+					constexpr uint32_t EMA_SAMPLES = (EMA_APPROX_SECONDS / 3 * 1e6)
+												   / BMI160_TARGET_SYNC_INTERVAL_MICROS;
+					sensorTimeRatioEma -= sensorTimeRatioEma / EMA_SAMPLES;
+					sensorTimeRatioEma += sensorTimeRatio / EMA_SAMPLES;
+
+					sampleDtMicros = BMI160_ODR_GYR_MICROS * sensorTimeRatioEma;
+					samplesSinceClockSync = 0;
+				}
+			}
+		}
+
+		getTemperature(&temperature);
+		optimistic_yield(100);
+	}
+}
+
+bool BMI160Sensor::readFIFO() {
+    getTimeFromIMU();
+	uint32_t now = micros();
+	constexpr uint32_t BMI160_TARGET_POLL_INTERVAL_MICROS = 6000;
+	uint32_t elapsed = now - lastPollTime;
+	if (elapsed < BMI160_TARGET_POLL_INTERVAL_MICROS) {
+		return false;
+	}
+    lastPollTime = now - (elapsed - BMI160_TARGET_POLL_INTERVAL_MICROS);
+	optimistic_yield(100);
+
     if (!imu.getFIFOCount(&fifo.length)) {
         #if BMI160_DEBUG
             numFIFOFailedReads++;
         #endif
-        return;
+        return false;
     }
 
-    if (fifo.length <= 1) return;
+    if (fifo.length <= 1) return false;
     if (fifo.length > sizeof(fifo.data)) {
         #if BMI160_DEBUG
             numFIFODropped++;
         #endif
         imu.resetFIFO();
-        return;
+        return false;
     }
     std::fill(fifo.data, fifo.data + fifo.length, 0);
     if (!imu.getFIFOBytes(fifo.data, fifo.length)) {
         #if BMI160_DEBUG
             numFIFOFailedReads++;
         #endif
-        return;
+        return false;
     }
 
     optimistic_yield(100);
@@ -497,6 +497,7 @@ void BMI160Sensor::readFIFO() {
             break;
         }
     }
+    return true;
 }
 
 void BMI160Sensor::onGyroRawSample(uint32_t dtMicros, int16_t x, int16_t y, int16_t z) {
@@ -548,7 +549,7 @@ void BMI160Sensor::onAccelRawSample(uint32_t dtMicros, int16_t x, int16_t y, int
     lastAxyz[1] = Axyz[1];
     lastAxyz[2] = Axyz[2];
 
-    sfusion.updateAcc(Axyz, dtMicros);
+    sfusion.updateAcc(Axyz, (double)dtMicros * 1.0e-6);
 
     optimistic_yield(100);
 }
@@ -694,17 +695,37 @@ bool BMI160Sensor::hasMagCalibration() {
     return false;
 }
 
+bool BMI160Sensor::hasSensCalibration() {
+#if BMI160_USE_SENSCAL
+    for (int i = 0; i < 3; i++) {
+        if (m_Calibration.G_Sens[i] == 0.0) {
+            m_Calibration.G_Sens[i] = 1.0;
+        }
+    }
+    for (int i = 0; i < 3; i++) {
+        if (m_Calibration.G_Sens[i] == 1.0) {
+            return false;
+        }
+    }
+    return true;
+#else
+    return false;
+#endif
+}
+
 void BMI160Sensor::startCalibration(int calibrationType) {
     ledManager.on();
 
     maybeCalibrateGyro();
     maybeCalibrateAccel();
     maybeCalibrateMag();
+    maybeCalibrateSens();
 
     m_Logger.debug("Saving the calibration data");
 
-    SlimeVR::Configuration::CalibrationConfig calibration;
+    SlimeVR::Configuration::CalibrationConfig calibration = {};
     calibration.type = SlimeVR::Configuration::CalibrationConfigType::BMI160;
+    calibration.version = SlimeVR::Configuration::BMI160CalibrationLatestVersion;
     calibration.data.bmi160 = m_Calibration;
     configuration.setCalibration(sensorId, calibration);
     configuration.save();
@@ -977,6 +998,211 @@ void BMI160Sensor::maybeCalibrateMag() {
     m_Logger.debug("}");
 #endif
 }
+
+void BMI160Sensor::maybeCalibrateSens() {
+#if !USE_6_AXIS
+    m_Logger.info(
+		"Skipping gyro sensitivity calibration on sensor #%d of type %s at address 0x%02x because magnetometer is enabled",
+		getSensorId(),
+		getIMUNameByType(sensorType),
+		addr
+	);
+    return;
+#endif
+
+#if USE_6_AXIS && BMI160_USE_SENSCAL
+    m_Logger.info(
+		"Gyro sensitivity calibration started on sensor #%d of type %s at address 0x%02x",
+		getSensorId(),
+		getIMUNameByType(sensorType),
+		addr
+	);
+    float oldSensCal[3];
+    oldSensCal[0] = m_Calibration.G_Sens[0];
+    oldSensCal[1] = m_Calibration.G_Sens[1];
+    oldSensCal[2] = m_Calibration.G_Sens[2];
+
+	m_Calibration.G_Sens[0] = 1.0f;
+	m_Calibration.G_Sens[1] = 1.0f;
+	m_Calibration.G_Sens[2] = 1.0f;
+
+	Quat rawRotationInit;
+	Vector3 rawRotationFinal;
+	uint8_t count = 0;
+	float gyroCount[3]; //Use this to determine the axis spun
+	float calculatedScale[3] = {1.0f, 1.0f, 1.0f};
+
+    unsigned long prevLedTime = millis();
+    constexpr uint16_t ledFlashDuration = 600;
+
+	ledManager.off();
+
+	m_Logger.info("");
+	m_Logger.info(
+		"  Step 0: Let the tracker sit, the light will flash when you should reorient the tracker"
+	);
+	m_Logger.info(
+		"  Step 1: Move the tracker to a corner or edge that aligns the tracker to the "
+		"same position every time"
+	);
+	m_Logger.info(
+		"      NOTE: You might also want to unplug the USB so it doesn't affect spins"
+	);
+	m_Logger.info(
+		"  Step 2: Let the tracker rest until the solid light turns on, you might need to hold it"
+	);
+    m_Logger.info(
+		"    against a wall depending on the case and orientation"
+	);
+	m_Logger.info(
+		"  Step 3: Rotate the tracker in the yaw axis for %d full rotations and align "
+		"it with the previous edge ",
+		BMI160_GYRO_SENSITIVITY_SPINS
+	);
+	m_Logger.info(
+		"      NOTE: The yaw axis is the direction of looking left or right with your "
+		"head, perpendicular to gravity"
+	);
+	m_Logger.info("      NOTE: The light will turn off after you start moving it");
+
+	m_Logger.info(
+		"  Step 4: Wait for the flashing light then rotate the tracker 90 degrees "
+		" to a new axis and "
+	);
+    m_Logger.info("    align with an edge. Repeat steps 2 and 3");
+
+	m_Logger.info(
+		"  Step 5: Wait for the flashing light then rotate the tracker 90 degrees so the last "
+		"axis is up and"
+	);
+    m_Logger.info("    aligned with an edge. Repeat steps 2 and 3");
+
+	imu.resetFIFO();
+    delayMicroseconds(BMI160_ODR_ACC_MICROS);
+    while (!sfusion.getRestDetected()) //Wait for rest
+    {
+        readFIFO();
+    }
+    
+
+	while (count < 3) {
+		ledManager.on();
+        prevLedTime = millis();
+        m_Logger.info("Move the tracker to a new axis then let sit");
+		while (sfusion.getRestDetected())
+        {
+            unsigned long now = millis();
+            if (now - ledFlashDuration > prevLedTime) {
+                ledManager.toggle();
+                prevLedTime = millis();
+            }
+            if (sfusion.getRestDetected() && sfusion.isUpdated()) {
+                rawRotationInit = sfusion.getQuaternionQuat();
+                sfusion.clearUpdated();
+            }
+            readFIFO();
+        }
+		ledManager.off();
+		while (!sfusion.getRestDetected())
+        {
+            readFIFO();
+        }
+
+		ledManager.on();  // The user should rotate
+		m_Logger.info("Rotate the tracker %d times", BMI160_GYRO_SENSITIVITY_SPINS);
+		gyroCount[0] = 0.0f;
+		gyroCount[1] = 0.0f;
+		gyroCount[2] = 0.0f;
+        rawRotationInit = sfusion.getQuaternionQuat();
+		while (sfusion.getRestDetected())
+        {
+            if (sfusion.getRestDetected() && sfusion.isUpdated()) {
+                rawRotationInit = sfusion.getQuaternionQuat();
+                sfusion.clearUpdated();
+            }
+            readFIFO();
+        }
+		ledManager.off();
+
+		while (!sfusion.getRestDetected()) {
+			if (readFIFO()) {
+				int16_t gx, gy, gz;
+				getRemappedRotation(&gx, &gy, &gz);
+				gyroCount[0] += (float)gx;
+				gyroCount[1] += (float)gy;
+				gyroCount[2] += (float)gz;
+			}
+		}
+
+		rawRotationFinal = (sfusion.getQuaternionQuat() * rawRotationInit.inverse()).get_euler() * dpsPerRad;
+
+        int16_t ax, ay, az;
+        getRemappedAcceleration(&ax, &ay, &az);
+
+		if (abs(gyroCount[0]) > abs(gyroCount[1]) && abs(gyroCount[0]) > abs(gyroCount[2])) { //Spun in X
+			if((ax < 0 && gyroCount[0] > 0) || (ax > 0 && gyroCount[0] < 0)) {
+				calculatedScale[0] = (1.0 / (1.0 - ((rawRotationFinal.y)/(360.0f * BMI160_GYRO_SENSITIVITY_SPINS))));
+				m_Logger.debug("X, Diff: %f", rawRotationFinal.y);
+			}
+			else {
+				calculatedScale[0] = (1.0 / (1.0 - ((-rawRotationFinal.y)/(360.0f * BMI160_GYRO_SENSITIVITY_SPINS))));
+				m_Logger.debug("-X, Diff: %f", -rawRotationFinal.y);
+			}
+		}
+
+		else if (abs(gyroCount[1]) > abs(gyroCount[0]) && abs(gyroCount[1]) > abs(gyroCount[2])) { //Spun in Y
+			if((ay > 0 && gyroCount[1] > 0) || (ay < 0 && gyroCount[1] < 0)) {
+				calculatedScale[1] = (1.0 / (1.0 - ((-rawRotationFinal.y)/(360.0f * BMI160_GYRO_SENSITIVITY_SPINS))));
+				m_Logger.debug("Y, Diff: %f", -rawRotationFinal.y);
+			}
+			else {
+				calculatedScale[1] = (1.0 / (1.0 - ((rawRotationFinal.y)/(360.0f * BMI160_GYRO_SENSITIVITY_SPINS))));
+				m_Logger.debug("-Y, Diff: %f", rawRotationFinal.y);
+			}
+		}
+
+		else if (abs(gyroCount[2]) > abs(gyroCount[0]) && abs(gyroCount[2]) > abs(gyroCount[1])) { //Spun in Z
+			if((az > 0 && gyroCount[2] > 0) || (az < 0 && gyroCount[2] < 0)) {
+				calculatedScale[2] = (1.0 / (1.0 - ((-rawRotationFinal.y)/(360.0f * BMI160_GYRO_SENSITIVITY_SPINS))));
+				m_Logger.debug("-Z, Diff: %f", -rawRotationFinal.y);
+			}
+			else {
+				calculatedScale[2] = (1.0 / (1.0 - ((rawRotationFinal.y)/(360.0f * BMI160_GYRO_SENSITIVITY_SPINS))));
+				m_Logger.debug("Z, Diff: %f", rawRotationFinal.y);
+			}
+		}
+		count++;
+	}
+
+    if (calculatedScale[0] != 1.0f) {
+        m_Calibration.G_Sens[0] = calculatedScale[0];
+    } else {
+        m_Calibration.G_Sens[0] = oldSensCal[0];
+    }
+
+    if (calculatedScale[1] != 1.0f) {
+        m_Calibration.G_Sens[1] = calculatedScale[1];
+    } else {
+        m_Calibration.G_Sens[1] = oldSensCal[1];
+    }
+
+    if (calculatedScale[2] != 1.0f) {
+        m_Calibration.G_Sens[2] = calculatedScale[2];
+    } else {
+        m_Calibration.G_Sens[2] = oldSensCal[2];
+    }
+
+#ifdef DEBUG_SENSOR
+	m_Logger.trace(
+		"Gyro Sensitivity calibration results: %f %f %f",
+		m_Calibration.G_Sens[0],
+		m_Calibration.G_Sens[1],
+		m_Calibration.G_Sens[2]
+	);
+#endif
+#endif // BMI160_USE_SENSCAL
+}
+
 
 void BMI160Sensor::remapGyroAccel(sensor_real_t* x, sensor_real_t* y, sensor_real_t* z) {
     remapAllAxis(AXIS_REMAP_GET_ALL_IMU(axisRemap), x, y, z);

@@ -92,6 +92,8 @@ constexpr uint16_t BMI160_FIFO_READ_BUFFER_SIZE_BYTES = min(
     BMI160_FIFO_READ_BUFFER_SIZE_SAMPLES * BMI160_FIFO_AVG_DATA_FRAME_LENGTH * 1.25f
 );
 
+constexpr float dpsPerRad = 57.295779578552f;
+
 // Typical sensitivity at 25C
 // See p. 9 of https://www.mouser.com/datasheet/2/783/BST-BMI160-DS000-1509569.pdf
 // #define BMI160_GYRO_TYPICAL_SENSITIVITY_LSB 16.4f  // 2000 deg  0
@@ -138,6 +140,7 @@ class BMI160Sensor : public Sensor {
         void maybeCalibrateGyro();
         void maybeCalibrateAccel();
         void maybeCalibrateMag();
+        void maybeCalibrateSens();
         
         void printTemperatureCalibrationState() override final;
         void printDebugTemperatureCalibrationState() override final;
@@ -153,11 +156,13 @@ class BMI160Sensor : public Sensor {
         bool hasGyroCalibration();
         bool hasAccelCalibration();
         bool hasMagCalibration();
+        bool hasSensCalibration();
 
         void onGyroRawSample(uint32_t dtMicros, int16_t x, int16_t y, int16_t z);
         void onAccelRawSample(uint32_t dtMicros, int16_t x, int16_t y, int16_t z);
         void onMagRawSample(uint32_t dtMicros, int16_t x, int16_t y, int16_t z);
-        void readFIFO();
+        bool readFIFO();
+        void getTimeFromIMU();
 
         void getMagnetometerXYZFromBuffer(uint8_t* data, int16_t* x, int16_t* y, int16_t* z);
 
@@ -220,6 +225,7 @@ class BMI160Sensor : public Sensor {
         double GOxyzStaticTempCompensated[3] = {0.0, 0.0, 0.0};
 
         bool isGyroCalibrated = false;
+        bool isSensCalCalibrated = false;
         bool isAccelCalibrated = false;
         bool isMagCalibrated = false;
 

@@ -28,6 +28,14 @@
 
 namespace SlimeVR {
     namespace Configuration {
+        //Only changed when the config setup is changed, not when a sensor config is updated
+        constexpr uint32_t CURRENT_CONFIGURATION_VERSION = 3; 
+        struct NoneCalibrationConfig {
+            uint8_t file_size[190]; //200 bytes
+        };
+        
+
+        constexpr uint32_t BMI160CalibrationLatestVersion = 2;
         struct BMI160CalibrationConfig {
             // accelerometer offsets and correction matrix
             float A_B[3];
@@ -39,11 +47,13 @@ namespace SlimeVR {
 
             // raw offsets, determined from gyro at rest
             float G_off[3];
+            float G_Sens[3];
 
             // calibration temperature for dynamic compensation
             float temperature;
         };
 
+        constexpr uint32_t MPU6050CalibrationLatestVersion = 1;
         struct MPU6050CalibrationConfig {
             // accelerometer offsets and correction matrix
             float A_B[3];
@@ -52,6 +62,7 @@ namespace SlimeVR {
             float G_off[3];
         };
 
+        constexpr uint32_t MPU9250CalibrationLatestVersion = 1;
         struct MPU9250CalibrationConfig {
             // accelerometer offsets and correction matrix
             float A_B[3];
@@ -65,6 +76,7 @@ namespace SlimeVR {
             float G_off[3];
         };
 
+        constexpr uint32_t ICM20948CalibrationLatestVersion = 1;
         struct ICM20948CalibrationConfig {
             // gyroscope bias
             int32_t G[3];
@@ -76,6 +88,7 @@ namespace SlimeVR {
             int32_t C[3];
         };
 
+        constexpr uint32_t ICM42688CalibrationLatestVersion = 1;
         struct ICM42688CalibrationConfig {
             // accelerometer offsets and correction matrix
             float A_B[3];
@@ -95,8 +108,10 @@ namespace SlimeVR {
 
         struct CalibrationConfig {
             CalibrationConfigType type;
+            uint32_t version;
 
             union {
+                NoneCalibrationConfig none;
                 BMI160CalibrationConfig bmi160;
                 MPU6050CalibrationConfig mpu6050;
                 MPU9250CalibrationConfig mpu9250;
@@ -104,6 +119,12 @@ namespace SlimeVR {
                 ICM42688CalibrationConfig icm42688;
             } data;
         };
+
+        static_assert(sizeof(NoneCalibrationConfig) >= sizeof(BMI160CalibrationConfig), "The calibration file_size needs to be increased");
+        static_assert(sizeof(NoneCalibrationConfig) >= sizeof(MPU6050CalibrationConfig), "The calibration file_size needs to be increased");
+        static_assert(sizeof(NoneCalibrationConfig) >= sizeof(MPU9250CalibrationConfig), "The calibration file_size needs to be increased");
+        static_assert(sizeof(NoneCalibrationConfig) >= sizeof(ICM20948CalibrationConfig), "The calibration file_size needs to be increased");
+        static_assert(sizeof(NoneCalibrationConfig) >= sizeof(ICM42688CalibrationConfig), "The calibration file_size needs to be increased");
     }
 }
 
