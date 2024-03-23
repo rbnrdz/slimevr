@@ -42,6 +42,7 @@ public:
     void sendData() override final;
     void startCalibration(int calibrationType) override final;
     SensorStatus getSensorState() override final;
+    void deinitialize() override final;
 
 private:
     BNO080 imu{};

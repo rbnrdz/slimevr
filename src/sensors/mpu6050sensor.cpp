@@ -203,3 +203,7 @@ void MPU6050Sensor::startCalibration(int calibrationType) {
 
     ledManager.off();
 }
+
+void MPU6050Sensor::deinitialize() {
+    imu.reset();
+}
