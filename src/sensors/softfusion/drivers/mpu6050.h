@@ -179,9 +179,9 @@ struct MPU6050
         }
     }
 
-	void deinitialize() {
+    void deinitialize() {
         i2c.writeReg(MPU6050_RA_PWR_MGMT_1, 0xc0); // Reset the device and put it into low power mode
-	}
+    }
 
 
 };
