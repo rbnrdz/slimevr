@@ -145,14 +145,14 @@ public:
 		int axisRemapParam
 	)
 		: Sensor(
-			"BMI160Sensor",
-			ImuID::BMI160,
-			id,
-			Address + addrSuppl,
-			rotation,
-			sclPin,
-			sdaPin
-		)
+			  "BMI160Sensor",
+			  ImuID::BMI160,
+			  id,
+			  Address + addrSuppl,
+			  rotation,
+			  sclPin,
+			  sdaPin
+		  )
 		, sfusion(
 			  BMI160_ODR_GYR_MICROS / 1e6f,
 			  BMI160_ODR_ACC_MICROS / 1e6f,

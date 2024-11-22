@@ -160,6 +160,21 @@ void Configuration::setSensor(size_t sensorID, const SensorConfig& config) {
 	m_Sensors[sensorID] = config;
 }
 
+void Configuration::eraseSensors() {
+	m_Sensors.clear();
+
+	SlimeVR::Utils::forEachFile(DIR_CALIBRATIONS, [&](SlimeVR::Utils::File f) {
+		char path[17];
+		sprintf(path, DIR_CALIBRATIONS "/%s", f.name());
+
+		f.close();
+
+		LittleFS.remove(path);
+	});
+
+	save();
+}
+
 void Configuration::loadSensors() {
 	SlimeVR::Utils::forEachFile(DIR_CALIBRATIONS, [&](SlimeVR::Utils::File f) {
 		SensorConfig sensorConfig;
@@ -376,6 +391,61 @@ void Configuration::print() {
 			case SensorConfigType::BNO0XX:
 				m_Logger.info("            magEnabled: %d", c.data.bno0XX.magEnabled);
 
+				break;
+
+			case SensorConfigType::NONBLOCKING:
+				if (c.data.nonblocking.sensorTimestepsCalibrated) {
+					m_Logger.info(
+						"            Calibrated timesteps: Accel %f, Gyro %f, "
+						"Temperature %f",
+						c.data.nonblocking.A_Ts,
+						c.data.nonblocking.G_Ts,
+						c.data.nonblocking.T_Ts
+					);
+				} else {
+					m_Logger.info("            Sensor timesteps not calibrated");
+				}
+
+				if (c.data.nonblocking.motionlessCalibrated) {
+					m_Logger.info("            Motionless calibration done");
+				} else {
+					m_Logger.info("            Motionless calibration not done");
+				}
+
+				if (c.data.nonblocking.gyroPointsCalibrated != 0) {
+					m_Logger.info(
+						"            Calibrated gyro bias at %fC: %f %f %f",
+						c.data.nonblocking.gyroMeasurementTemperature1,
+						c.data.nonblocking.G_off1[0],
+						c.data.nonblocking.G_off1[1],
+						c.data.nonblocking.G_off1[2]
+					);
+				} else {
+					m_Logger.info("            Gyro bias not calibrated");
+				}
+
+				if (c.data.nonblocking.gyroPointsCalibrated == 2) {
+					m_Logger.info(
+						"            Calibrated gyro bias at %fC: %f %f %f",
+						c.data.nonblocking.gyroMeasurementTemperature2,
+						c.data.nonblocking.G_off2[0],
+						c.data.nonblocking.G_off2[1],
+						c.data.nonblocking.G_off2[2]
+					);
+				}
+
+				if (c.data.nonblocking.accelCalibrated[0]
+					|| c.data.nonblocking.accelCalibrated[1]
+					|| c.data.nonblocking.accelCalibrated[2]) {
+					m_Logger.info(
+						"            Calibrated accel bias: %f %f %f",
+						c.data.nonblocking.A_off[0],
+						c.data.nonblocking.A_off[1],
+						c.data.nonblocking.A_off[2]
+					);
+				} else {
+					m_Logger.info("            Accel bias not calibrated");
+				}
 				break;
 		}
 	}

@@ -31,7 +31,7 @@
 
 namespace SlimeVR::Sensors::SoftFusion::Drivers {
 
-// Driver uses acceleration range at 8g
+// Driver uses acceleration range at 4g
 // and gyroscope range at 1000dps
 // Gyroscope ODR = accel ODR = 250Hz
 
@@ -63,7 +63,26 @@ struct MPU6050 {
 	static constexpr float MagTs = 1.0 / Freq;
 
 	static constexpr float GyroSensitivity = 32.8f;
-	static constexpr float AccelSensitivity = 4096.0f;
+	static constexpr float AccelSensitivity = 8192.0f;
+
+	// Temperature stability constant - how many degrees of temperature for the bias to
+	// change by 0.01 Though I don't know if it should be 0.1 or 0.01, this is a guess
+	// and seems to work better than 0.1
+	static constexpr float TemperatureZROChange = 1.6f;
+
+	// VQF parameters
+	// biasSigmaInit and and restThGyr should be the sensor's typical gyro bias
+	// biasClip should be 2x the sensor's typical gyro bias
+	// restThAcc should be the sensor's typical acceleration bias
+
+	// Jesus christ this sensor sucks
+	static constexpr VQFParams SensorVQFParams{
+		.motionBiasEstEnabled = true,
+		.biasSigmaInit = 20.0f,
+		.biasClip = 40.0f,
+		.restThGyr = 20.0f,
+		.restThAcc = 0.784f,
+	};
 
 	I2CImpl i2c;
 	SlimeVR::Logging::Logger& logger;
@@ -91,7 +110,7 @@ struct MPU6050 {
 
 		struct AccelConfig {
 			static constexpr uint8_t reg = 0x1c;
-			static constexpr uint8_t value = 0b10 << 3;  // 8g
+			static constexpr uint8_t value = 0b01 << 3;  // 4g
 		};
 
 		static constexpr uint8_t OutTemp = MPU6050_RA_TEMP_OUT_H;
@@ -166,8 +185,12 @@ struct MPU6050 {
 		return result;
 	}
 
-	template <typename AccelCall, typename GyroCall>
-	void bulkRead(AccelCall&& processAccelSample, GyroCall&& processGyroSample) {
+	template <typename AccelCall, typename GyroCall, typename TemperatureCall>
+	void bulkRead(
+		AccelCall&& processAccelSample,
+		GyroCall&& processGyroSample,
+		TemperatureCall&& processTemperatureSample
+	) {
 		const auto status = i2c.readReg(Regs::IntStatus);
 
 		if (status & (1 << MPU6050_INTERRUPT_FIFO_OFLOW_BIT)) {

@@ -56,14 +56,14 @@ public:
 		uint8_t
 	)
 		: Sensor(
-			"MPU9250Sensor",
-			ImuID::MPU9250,
-			id,
-			Address + addrSuppl,
-			rotation,
-			sclPin,
-			sdaPin
-		)
+			  "MPU9250Sensor",
+			  ImuID::MPU9250,
+			  id,
+			  Address + addrSuppl,
+			  rotation,
+			  sclPin,
+			  sdaPin
+		  )
 #if !MPU_USE_DMPMAG
 		, sfusion(MPU9250_ODR_TS)
 #endif

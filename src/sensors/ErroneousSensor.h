@@ -36,9 +36,9 @@ public:
 	~ErroneousSensor(){};
 
 	void motionSetup() override;
-	void motionLoop() override final{};
-	void sendData() override{};
-	void startCalibration(int calibrationType) override final{};
+	void motionLoop() override final {};
+	void sendData() override {};
+	void startCalibration(int calibrationType) override final {};
 	SensorStatus getSensorState() override final;
 
 private:

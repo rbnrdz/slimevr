@@ -145,7 +145,8 @@ void cmdSet(CmdParser* parser) {
 void printState() {
 	logger.info(
 		"SlimeVR Tracker, board: %d, hardware: %d, protocol: %d, firmware: %s, "
-		"address: %s, mac: %s, status: %d, wifi state: %d",
+		"address: "
+		"%s, mac: %s, status: %d, wifi state: %d",
 		BOARD,
 		HARDWARE_MCU,
 		PROTOCOL_VERSION,
@@ -364,10 +365,17 @@ void cmdTemperatureCalibration(CmdParser* parser) {
 	);
 }
 
+void cmdDeleteCalibration(CmdParser* parser) {
+	logger.info("ERASE CALIBRATION");
+
+	configuration.eraseSensors();
+}
+
 void setUp() {
 	cmdCallbacks.addCmd("SET", &cmdSet);
 	cmdCallbacks.addCmd("GET", &cmdGet);
 	cmdCallbacks.addCmd("FRST", &cmdFactoryReset);
+	cmdCallbacks.addCmd("DELCAL", &cmdDeleteCalibration);
 	cmdCallbacks.addCmd("REBOOT", &cmdReboot);
 	cmdCallbacks.addCmd("TCAL", &cmdTemperatureCalibration);
 }

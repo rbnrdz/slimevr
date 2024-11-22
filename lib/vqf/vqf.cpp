@@ -18,41 +18,6 @@
 
 inline vqf_real_t square(vqf_real_t x) { return x*x; }
 
-
-VQFParams::VQFParams()
-    : tauAcc(3.0)
-    , tauMag(9.0)
-#ifndef VQF_NO_MOTION_BIAS_ESTIMATION
-    , motionBiasEstEnabled(true)
-#endif
-    , restBiasEstEnabled(true)
-    , magDistRejectionEnabled(true)
-    , biasSigmaInit(0.5)
-    , biasForgettingTime(100.0)
-    , biasClip(2.0)
-#ifndef VQF_NO_MOTION_BIAS_ESTIMATION
-    , biasSigmaMotion(0.1)
-    , biasVerticalForgettingFactor(0.0001)
-#endif
-    , biasSigmaRest(0.03)
-    , restMinT(1.5)
-    , restFilterTau(0.5)
-    , restThGyr(2.0)
-    , restThAcc(0.5)
-    , magCurrentTau(0.05)
-    , magRefTau(20.0)
-    , magNormTh(0.1)
-    , magDipTh(10.0)
-    , magNewTime(20.0)
-    , magNewFirstTime(5.0)
-    , magNewMinGyr(20.0)
-    , magMinUndisturbedTime(0.5)
-    , magMaxRejectionTime(60.0)
-    , magRejectionFactor(2.0)
-{
-
-}
-
 VQF::VQF(vqf_real_t gyrTs, vqf_real_t accTs, vqf_real_t magTs)
 {
     coeffs.gyrTs = gyrTs;
@@ -917,16 +882,8 @@ void VQF::setup()
 
     coeffs.biasP0 = square(params.biasSigmaInit*100.0);
     // the system noise increases the variance from 0 to (0.1 °/s)^2 in biasForgettingTime seconds
-    coeffs.biasV = square(0.1*100.0)*coeffs.accTs/params.biasForgettingTime;
 
-#ifndef VQF_NO_MOTION_BIAS_ESTIMATION
-    vqf_real_t pMotion = square(params.biasSigmaMotion*100.0);
-    coeffs.biasMotionW = square(pMotion) / coeffs.biasV + pMotion;
-    coeffs.biasVerticalW = coeffs.biasMotionW / std::max(params.biasVerticalForgettingFactor, vqf_real_t(1e-10));
-#endif
-
-    vqf_real_t pRest = square(params.biasSigmaRest*100.0);
-    coeffs.biasRestW = square(pRest) / coeffs.biasV + pRest;
+	updateBiasForgettingTime(params.biasForgettingTime);
 
     filterCoeffs(params.restFilterTau, coeffs.gyrTs, coeffs.restGyrLpB, coeffs.restGyrLpA);
     filterCoeffs(params.restFilterTau, coeffs.accTs, coeffs.restAccLpB, coeffs.restAccLpA);
@@ -940,4 +897,17 @@ void VQF::setup()
     }
 
     resetState();
+}
+
+void VQF::updateBiasForgettingTime(float biasForgettingTime) {
+    coeffs.biasV = square(0.1*100.0)*coeffs.accTs/params.biasForgettingTime;
+
+#ifndef VQF_NO_MOTION_BIAS_ESTIMATION
+    vqf_real_t pMotion = square(params.biasSigmaMotion*100.0);
+    coeffs.biasMotionW = square(pMotion) / coeffs.biasV + pMotion;
+    coeffs.biasVerticalW = coeffs.biasMotionW / std::max(params.biasVerticalForgettingFactor, vqf_real_t(1e-10));
+#endif
+
+    vqf_real_t pRest = square(params.biasSigmaRest*100.0);
+    coeffs.biasRestW = square(pRest) / coeffs.biasV + pRest;
 }

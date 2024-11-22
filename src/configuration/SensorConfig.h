@@ -75,6 +75,29 @@ struct SoftFusionSensorConfig {
 	uint8_t MotionlessData[60];
 };
 
+struct NonBlockingSensorConfig {
+	ImuID ImuType;
+	uint16_t MotionlessDataLen;
+
+	bool sensorTimestepsCalibrated;
+	float A_Ts;
+	float G_Ts;
+	float M_Ts;
+	float T_Ts;
+
+	bool motionlessCalibrated;
+	uint8_t MotionlessData[60];
+
+	uint8_t gyroPointsCalibrated;
+	float gyroMeasurementTemperature1;
+	float G_off1[3];
+	float gyroMeasurementTemperature2;
+	float G_off2[3];
+
+	bool accelCalibrated[3];
+	float A_off[3];
+};
+
 struct MPU6050SensorConfig {
 	// accelerometer offsets and correction matrix
 	float A_B[3];
@@ -131,6 +154,7 @@ enum class SensorConfigType {
 	MPU9250,
 	ICM20948,
 	SFUSION,
+	NONBLOCKING,
 	BNO0XX
 };
 
@@ -142,6 +166,7 @@ struct SensorConfig {
 	union {
 		BMI160SensorConfig bmi160;
 		SoftFusionSensorConfig sfusion;
+		NonBlockingSensorConfig nonblocking;
 		MPU6050SensorConfig mpu6050;
 		MPU9250SensorConfig mpu9250;
 		ICM20948SensorConfig icm20948;

@@ -23,7 +23,12 @@
 
 #pragma once
 
+#include <array>
+#include <type_traits>
+#include <utility>
+
 #include "../SensorFusionRestDetect.h"
+#include "../nonblockingcalibration/NonBlockingCalibration.h"
 #include "../sensor.h"
 #include "GlobalVars.h"
 
@@ -32,8 +37,15 @@ namespace SlimeVR::Sensors {
 template <template <typename I2CImpl> typename T, typename I2CImpl>
 class SoftFusionSensor : public Sensor {
 	using imu = T<I2CImpl>;
-	using RawVectorT = std::array<int16_t, 3>;
-	static constexpr auto UpsideDownCalibrationInit = true;
+	static constexpr auto UpsideDownCalibrationInit = false;
+
+	static constexpr bool Uses32BitSensorData
+		= requires(imu& i) { i.Uses32BitSensorData; };
+
+	using RawSensorT =
+		typename std::conditional<Uses32BitSensorData, int32_t, int16_t>::type;
+	using RawVectorT = std::array<RawSensorT, 3>;
+
 	static constexpr auto GyroCalibDelaySeconds = 5;
 	static constexpr auto GyroCalibSeconds = 5;
 	static constexpr auto SampleRateCalibDelaySeconds = 1;
@@ -45,6 +57,7 @@ class SoftFusionSensor : public Sensor {
 	static constexpr double GScale
 		= ((32768. / imu::GyroSensitivity) / 32768.) * (PI / 180.0);
 	static constexpr double AScale = CONST_EARTH_GRAVITY / imu::AccelSensitivity;
+	static constexpr double TScale = 1 / imu::TemperatureSensitivity;
 
 	static constexpr bool HasMotionlessCalib
 		= requires(imu& i) { typename imu::MotionlessCalibrationData; };
@@ -55,6 +68,17 @@ class SoftFusionSensor : public Sensor {
 			return 0;
 		}
 	}
+
+	static constexpr bool OnlyDirectTemperature = requires(imu i) {
+		{ i.getDirectTemp() } -> std::same_as<float>;
+	};
+
+	static constexpr bool DefinedTemperatureZROChange = requires(imu i) {
+		{ imu::TemperatureZROChange } -> std::same_as<float>;
+	};
+
+	static constexpr bool HasPerSensorVQFParams
+		= requires(imu i) { imu::SensorVQFParams; };
 
 	bool detected() const {
 		const auto value = m_sensor.i2c.readReg(imu::Regs::WhoAmI::reg);
@@ -71,32 +95,114 @@ class SoftFusionSensor : public Sensor {
 		return true;
 	}
 
+	float lastReadTemperature = 0;
+	float temperatureChangeRate = 0;
+
+	float lastTemperatureAverage;
+	float temperatureSum = 0;
+	float temperatureTimeSum = 0;
+
+	static constexpr float temperatureAveragingSeconds = 5;
+
+	float zroChangeOverTemperature = 0;
+
+	void handleTemperatureMeasurement(float temperature, float timeStep) {
+#if USE_NONBLOCKING_CALIBRATION
+		nonBlockingCalibrator.provideTempSample(temperature);
+#endif
+
+		lastReadTemperature = temperature;
+
+		temperatureSum += temperature * timeStep;
+		temperatureTimeSum += timeStep;
+
+		if (temperatureTimeSum < temperatureAveragingSeconds) {
+			return;
+		}
+
+		float averageTemperature = temperatureSum / temperatureTimeSum;
+		temperatureChangeRate
+			= (averageTemperature - lastTemperatureAverage) / temperatureTimeSum;
+		temperatureTimeSum = 0;
+		temperatureSum = 0;
+		lastTemperatureAverage = averageTemperature;
+
+		if (DefinedTemperatureZROChange
+#if USE_NONBLOCKING_CALIBRATION
+			|| m_calibration.gyroPointsCalibrated == 2
+#endif
+		) {
+			m_fusion.updateBiasForgettingTime(
+				zroChangeOverTemperature / temperatureChangeRate
+			);
+		}
+	}
+
 	void sendTempIfNeeded() {
 		uint32_t now = micros();
+
+		if constexpr (OnlyDirectTemperature) {
+			uint32_t elapsedSinceSampled = now - m_lastTemperatureSampling;
+			const uint32_t samplingInterval = imu::TempTs * 1e6;
+			if (elapsedSinceSampled >= samplingInterval) {
+				float currentTemperature = m_sensor.getDirectTemp();
+				handleTemperatureMeasurement(currentTemperature, samplingInterval);
+			}
+			m_lastTemperatureSampling = now - (elapsedSinceSampled - samplingInterval);
+		}
+
 		constexpr float maxSendRateHz = 2.0f;
 		constexpr uint32_t sendInterval = 1.0f / maxSendRateHz * 1e6;
-		uint32_t elapsed = now - m_lastTemperaturePacketSent;
-		if (elapsed >= sendInterval) {
-			const float temperature = m_sensor.getDirectTemp();
-			m_lastTemperaturePacketSent = now - (elapsed - sendInterval);
-			networkConnection.sendTemperature(sensorId, temperature);
+		uint32_t elapsedSinceSend = now - m_lastTemperaturePacketSent;
+		if (elapsedSinceSend >= sendInterval) {
+			m_lastTemperaturePacketSent = now - (elapsedSinceSend - sendInterval);
+			networkConnection.sendTemperature(sensorId, lastReadTemperature);
 		}
 	}
 
 	void recalcFusion() {
-		m_fusion = SensorFusionRestDetect(
-			m_calibration.G_Ts,
-			m_calibration.A_Ts,
-			m_calibration.M_Ts
-		);
+		if constexpr (HasPerSensorVQFParams) {
+			m_fusion = SensorFusionRestDetect(
+				imu::SensorVQFParams,
+				m_calibration.G_Ts,
+				m_calibration.A_Ts,
+				m_calibration.M_Ts
+			);
+
+#if USE_NONBLOCKING_CALIBRATION
+			if (m_calibration.gyroPointsCalibrated > 0) {
+				m_fusion.updateRestDetectionParams(
+					imu::SensorVQFParams.restThGyr / 2,
+					imu::SensorVQFParams.restThAcc
+				);
+			}
+#endif
+		} else {
+			m_fusion = SensorFusionRestDetect(
+				m_calibration.G_Ts,
+				m_calibration.A_Ts,
+				m_calibration.M_Ts
+			);
+
+#if USE_NONBLOCKING_CALIBRATION
+			if (m_calibration.gyroPointsCalibrated > 0) {
+				VQFParams defaultParams;
+				m_fusion.updateRestDetectionParams(
+					defaultParams.restThGyr / 2,
+					defaultParams.restThAcc
+				);
+			}
+#endif
+		}
 	}
 
-	void processAccelSample(const int16_t xyz[3], const sensor_real_t timeDelta) {
+	void processAccelSample(const RawSensorT xyz[3], const sensor_real_t timeDelta) {
 		sensor_real_t accelData[]
 			= {static_cast<sensor_real_t>(xyz[0]),
 			   static_cast<sensor_real_t>(xyz[1]),
 			   static_cast<sensor_real_t>(xyz[2])};
 
+#if !USE_NONBLOCKING_CALIBRATION
 		float tmp[3];
 		for (uint8_t i = 0; i < 3; i++) {
 			tmp[i] = (accelData[i] - m_calibration.A_B[i]);
@@ -114,11 +220,21 @@ class SoftFusionSensor : public Sensor {
 			= (m_calibration.A_Ainv[2][0] * tmp[0] + m_calibration.A_Ainv[2][1] * tmp[1]
 			   + m_calibration.A_Ainv[2][2] * tmp[2])
 			* AScale;
+#else
+		accelData[0] = accelData[0] * AScale - m_calibration.A_off[0];
+		accelData[1] = accelData[1] * AScale - m_calibration.A_off[1];
+		accelData[2] = accelData[2] * AScale - m_calibration.A_off[2];
+#endif
 
 		m_fusion.updateAcc(accelData, m_calibration.A_Ts);
+
+#if USE_NONBLOCKING_CALIBRATION
+		nonBlockingCalibrator.provideAccelSample(xyz);
+#endif
 	}
 
-	void processGyroSample(const int16_t xyz[3], const sensor_real_t timeDelta) {
+	void processGyroSample(const RawSensorT xyz[3], const sensor_real_t timeDelta) {
+#if !USE_NONBLOCKING_CALIBRATION
 		const sensor_real_t scaledData[] = {
 			static_cast<sensor_real_t>(
 				GScale * (static_cast<sensor_real_t>(xyz[0]) - m_calibration.G_off[0])
@@ -130,7 +246,31 @@ class SoftFusionSensor : public Sensor {
 				GScale * (static_cast<sensor_real_t>(xyz[2]) - m_calibration.G_off[2])
 			)
 		};
+#else
+		const sensor_real_t scaledData[] = {
+			static_cast<sensor_real_t>(
+				GScale * (static_cast<sensor_real_t>(xyz[0]) - m_calibration.G_off1[0])
+			),
+			static_cast<sensor_real_t>(
+				GScale * (static_cast<sensor_real_t>(xyz[1]) - m_calibration.G_off1[1])
+			),
+			static_cast<sensor_real_t>(
+				GScale * (static_cast<sensor_real_t>(xyz[2]) - m_calibration.G_off1[2])
+			)
+		};
+#endif
 		m_fusion.updateGyro(scaledData, m_calibration.G_Ts);
+
+#if USE_NONBLOCKING_CALIBRATION
+		nonBlockingCalibrator.provideGyroSample(xyz);
+#endif
+	}
+
+	void processTemperatureSample(const int16_t value, const sensor_real_t timeDelta) {
+		if constexpr (!OnlyDirectTemperature) {
+			float scaledTemperature = value * TScale + imu::TemperatureBias;
+			handleTemperatureMeasurement(scaledTemperature, timeDelta);
+		}
 	}
 
 	void eatSamplesForSeconds(const uint32_t seconds) {
@@ -145,34 +285,43 @@ class SoftFusionSensor : public Sensor {
 				m_Logger.info("%d...", currentSecondsRemaining + 1);
 				lastSecondsRemaining = currentSecondsRemaining;
 			}
+
 			m_sensor.bulkRead(
-				[](const int16_t xyz[3], const sensor_real_t timeDelta) {},
-				[](const int16_t xyz[3], const sensor_real_t timeDelta) {}
+				[](const RawSensorT xyz[3], const sensor_real_t timeDelta) {},
+				[](const RawSensorT xyz[3], const sensor_real_t timeDelta) {},
+				[](const int16_t value, const sensor_real_t timeDelta) {}
 			);
 		}
 	}
 
-	std::pair<RawVectorT, RawVectorT> eatSamplesReturnLast(const uint32_t milliseconds
+	std::tuple<RawVectorT, RawVectorT, float> eatSamplesReturnLast(
+		const uint32_t milliseconds
 	) {
 		RawVectorT accel = {0};
 		RawVectorT gyro = {0};
+		float temperature = 0;
 		const auto targetDelay = millis() + milliseconds;
 		while (millis() < targetDelay) {
 			m_sensor.bulkRead(
-				[&](const int16_t xyz[3], const sensor_real_t timeDelta) {
+				[&](const RawSensorT xyz[3], const sensor_real_t timeDelta) {
 					accel[0] = xyz[0];
 					accel[1] = xyz[1];
 					accel[2] = xyz[2];
 				},
-				[&](const int16_t xyz[3], const sensor_real_t timeDelta) {
+				[&](const RawSensorT xyz[3], const sensor_real_t timeDelta) {
 					gyro[0] = xyz[0];
 					gyro[1] = xyz[1];
 					gyro[2] = xyz[2];
+				},
+				[&](const int16_t value, const sensor_real_t timeDelta) {
+					if constexpr (!OnlyDirectTemperature) {
+						temperature = value * TScale + imu::TemperatureBias;
+					}
 				}
 			);
 			yield();
 		}
-		return std::make_pair(accel, gyro);
+		return std::make_tuple(accel, gyro, temperature);
 	}
 
 public:
@@ -188,20 +337,38 @@ public:
 		uint8_t
 	)
 		: Sensor(
-			imu::Name,
-			imu::Type,
-			id,
-			imu::Address + addrSuppl,
-			rotation,
-			sclPin,
-			sdaPin
-		)
-		, m_fusion(imu::GyrTs, imu::AccTs, imu::MagTs)
-		, m_sensor(I2CImpl(imu::Address + addrSuppl), m_Logger) {}
+			  imu::Name,
+			  imu::Type,
+			  id,
+			  imu::Address + addrSuppl,
+			  rotation,
+			  sclPin,
+			  sdaPin
+		  )
+		, m_fusion(
+			  HasPerSensorVQFParams
+				  ? SensorFusionRestDetect(
+						imu::SensorVQFParams,
+						imu::GyrTs,
+						imu::AccTs,
+						imu::MagTs
+					)
+				  : SensorFusionRestDetect(imu::GyrTs, imu::AccTs, imu::MagTs)
+		  )
+		, m_sensor(I2CImpl(imu::Address + addrSuppl), m_Logger)
+#if USE_NONBLOCKING_CALIBRATION
+		, nonBlockingCalibrator(m_fusion, AScale, m_sensor, sensorId)
+#endif
+	{
+	}
 	~SoftFusionSensor() {}
 
 	void motionLoop() override final {
 		sendTempIfNeeded();
+
+#if USE_NONBLOCKING_CALIBRATION
+		nonBlockingCalibrator.tick();
+#endif
 
 		// read fifo updating fusion
 		uint32_t now = micros();
@@ -210,11 +377,14 @@ public:
 		if (elapsed >= targetPollIntervalMicros) {
 			m_lastPollTime = now - (elapsed - targetPollIntervalMicros);
 			m_sensor.bulkRead(
-				[&](const int16_t xyz[3], const sensor_real_t timeDelta) {
+				[&](const RawSensorT xyz[3], const sensor_real_t timeDelta) {
 					processAccelSample(xyz, timeDelta);
 				},
-				[&](const int16_t xyz[3], const sensor_real_t timeDelta) {
+				[&](const RawSensorT xyz[3], const sensor_real_t timeDelta) {
 					processGyroSample(xyz, timeDelta);
+				},
+				[&](const int16_t value, const sensor_real_t timeDelta) {
+					processTemperatureSample(value, timeDelta);
 				}
 			);
 			optimistic_yield(100);
@@ -227,8 +397,13 @@ public:
 
 		// send new fusion values when time is up
 		now = micros();
-		constexpr float maxSendRateHz = 120.0f;
-		constexpr uint32_t sendInterval = 1.0f / maxSendRateHz * 1e6;
+		float maxSendRateHz = 0;
+		if (sensorManager.getActiveSensorCount() > 1) {
+			maxSendRateHz = 90.0f;
+		} else {
+			maxSendRateHz = 120.0f;
+		}
+		uint32_t sendInterval = 1.0f / maxSendRateHz * 1e6;
 		elapsed = now - m_lastRotationPacketSent;
 		if (elapsed >= sendInterval) {
 			m_lastRotationPacketSent = now - (elapsed - sendInterval);
@@ -248,6 +423,7 @@ public:
 		SlimeVR::Configuration::SensorConfig sensorCalibration
 			= configuration.getSensor(sensorId);
 
+#if !USE_NONBLOCKING_CALIBRATION
 		// If no compatible calibration data is found, the calibration data will just be
 		// zero-ed out
 		if (sensorCalibration.type == SlimeVR::Configuration::SensorConfigType::SFUSION
@@ -256,7 +432,8 @@ public:
 				== MotionlessCalibDataSize())) {
 			m_calibration = sensorCalibration.data.sfusion;
 			recalcFusion();
-		} else if (sensorCalibration.type == SlimeVR::Configuration::SensorConfigType::NONE) {
+		} else if (sensorCalibration.type
+				   == SlimeVR::Configuration::SensorConfigType::NONE) {
 			m_Logger.warn(
 				"No calibration data found for sensor %d, ignoring...",
 				sensorId
@@ -269,6 +446,50 @@ public:
 			);
 			m_Logger.info("Please recalibrate");
 		}
+#else
+		if (sensorCalibration.type
+				== SlimeVR::Configuration::SensorConfigType::NONBLOCKING
+			&& (sensorCalibration.data.sfusion.ImuType == imu::Type)
+			&& (sensorCalibration.data.sfusion.MotionlessDataLen
+				== MotionlessCalibDataSize())) {
+			m_calibration = sensorCalibration.data.nonblocking;
+			m_calibration.accelCalibrated[0] = false;
+			m_calibration.accelCalibrated[1] = false;
+			m_calibration.accelCalibrated[2] = false;
+			m_calibration.A_off[0] = 0;
+			m_calibration.A_off[1] = 0;
+			m_calibration.A_off[2] = 0;
+			recalcFusion();
+		} else if (sensorCalibration.type
+				   != SlimeVR::Configuration::SensorConfigType::NONE) {
+			m_Logger.warn(
+				"Incompatible calibration data found for sensor %d, ignoring...",
+				sensorId
+			);
+		}
+
+		nonBlockingCalibrator.setup(m_calibration);
+
+		if constexpr (DefinedTemperatureZROChange) {
+			zroChangeOverTemperature = imu::TemperatureZROChange;
+		}
+
+		if (m_calibration.gyroPointsCalibrated == 2) {
+			float diffX = (m_calibration.G_off2[0] - m_calibration.G_off1[0]) * GScale;
+			float diffY = (m_calibration.G_off2[1] - m_calibration.G_off1[1]) * GScale;
+			float diffZ = (m_calibration.G_off2[2] - m_calibration.G_off1[2]) * GScale;
+
+			float maxDiff
+				= std::max(std::max(std::abs(diffX), std::abs(diffY)), std::abs(diffZ));
+
+			// TODO: store just the datasheet value and the equivalent instead
+			// ! I'm not sure if this should be 0.1 or 0.01, but 0.1 seems to work
+			// ! better?
+			zroChangeOverTemperature = 0.1f / maxDiff
+									 / (m_calibration.gyroMeasurementTemperature2
+										- m_calibration.gyroMeasurementTemperature1);
+		}
+#endif
 
 		bool initResult = false;
 
@@ -288,10 +509,12 @@ public:
 
 		m_status = SensorStatus::SENSOR_OK;
 		working = true;
+
+#if !USE_NONBLOCKING_CALIBRATION
 		[[maybe_unused]] auto lastRawSample = eatSamplesReturnLast(1000);
 		if constexpr (UpsideDownCalibrationInit) {
 			auto gravity = static_cast<sensor_real_t>(
-				AScale * static_cast<sensor_real_t>(lastRawSample.first[2])
+				AScale * static_cast<sensor_real_t>(std::get<0>(lastRawSample)[2])
 			);
 			m_Logger.info(
 				"Gravity read: %.1f (need < -7.5 to start calibration)",
@@ -302,7 +525,7 @@ public:
 				m_Logger.info("Flip front in 5 seconds to start calibration");
 				lastRawSample = eatSamplesReturnLast(5000);
 				gravity = static_cast<sensor_real_t>(
-					AScale * static_cast<sensor_real_t>(lastRawSample.first[2])
+					AScale * static_cast<sensor_real_t>(std::get<0>(lastRawSample)[2])
 				);
 				if (gravity > 7.5f) {
 					m_Logger.debug("Starting calibration...");
@@ -314,13 +537,14 @@ public:
 				ledManager.off();
 			}
 		}
+#endif
 	}
 
+#if !USE_NONBLOCKING_CALIBRATION
 	void startCalibration(int calibrationType) override final {
 		if (calibrationType == 0) {
 			// ALL
 			calibrateSampleRate();
-			calibrateGyroOffset();
 			if constexpr (HasMotionlessCalib) {
 				typename imu::MotionlessCalibrationData calibData;
 				m_sensor.motionlessCalibration(calibData);
@@ -330,6 +554,7 @@ public:
 					sizeof(calibData)
 				);
 			}
+			calibrateGyroOffset();
 			calibrateAccel();
 		} else if (calibrationType == 1) {
 			calibrateSampleRate();
@@ -372,10 +597,15 @@ public:
 			GyroCalibDelaySeconds
 		);
 		ledManager.on();
-		eatSamplesForSeconds(GyroCalibDelaySeconds);
+		[[maybe_unused]] auto lastSamples
+			= eatSamplesReturnLast(GyroCalibDelaySeconds * 1000);
 		ledManager.off();
 
-		m_calibration.temperature = m_sensor.getDirectTemp();
+		if constexpr (OnlyDirectTemperature) {
+			m_calibration.temperature = m_sensor.getDirectTemp();
+		} else {
+			m_calibration.temperature = std::get<2>(lastSamples);
+		}
 		m_Logger.trace("Calibration temperature: %f", m_calibration.temperature);
 
 		ledManager.pattern(100, 100, 3);
@@ -391,14 +621,15 @@ public:
 			ESP.wdtFeed();
 #endif
 			m_sensor.bulkRead(
-				[](const int16_t xyz[3], const sensor_real_t timeDelta) {},
+				[](const RawSensorT xyz[3], const sensor_real_t timeDelta){},
 				[&sumXYZ,
-				 &sampleCount](const int16_t xyz[3], const sensor_real_t timeDelta) {
+				 &sampleCount](const RawSensorT xyz[3], const sensor_real_t timeDelta) {
 					sumXYZ[0] += xyz[0];
 					sumXYZ[1] += xyz[1];
 					sumXYZ[2] += xyz[2];
 					++sampleCount;
-				}
+				},
+				[](const int16_t value, const sensor_real_t timeDelta){}
 			);
 		}
 
@@ -426,7 +657,7 @@ public:
 		ledManager.off();
 
 		RestDetectionParams calibrationRestDetectionParams;
-		calibrationRestDetectionParams.restMinTime = AccelCalibRestSeconds;
+
 		calibrationRestDetectionParams.restThAcc = 0.25f;
 
 		RestDetection calibrationRestDetection(
@@ -457,7 +688,7 @@ public:
 			ESP.wdtFeed();
 #endif
 			m_sensor.bulkRead(
-				[&](const int16_t xyz[3], const sensor_real_t timeDelta) {
+				[&](const RawSensorT xyz[3], const sensor_real_t timeDelta) {
 					const sensor_real_t scaledData[]
 						= {static_cast<sensor_real_t>(
 							   AScale * static_cast<sensor_real_t>(xyz[0])
@@ -512,7 +743,8 @@ public:
 						samplesGathered = true;
 					}
 				},
-				[](const int16_t xyz[3], const sensor_real_t timeDelta) {}
+				[](const RawSensorT xyz[3], const sensor_real_t timeDelta){},
+				[](const int16_t value, const sensor_real_t timeDelta){}
 			);
 		}
 		ledManager.off();
@@ -551,18 +783,24 @@ public:
 
 		uint32_t accelSamples = 0;
 		uint32_t gyroSamples = 0;
+		uint32_t temperatureSamples = 0;
 
 		const auto calibTarget = millis() + 1000 * SampleRateCalibSeconds;
 		m_Logger.debug("Counting samples now...");
 		uint32_t currentTime;
 		while ((currentTime = millis()) < calibTarget) {
 			m_sensor.bulkRead(
-				[&accelSamples](const int16_t xyz[3], const sensor_real_t timeDelta) {
-					accelSamples++;
-				},
-				[&gyroSamples](const int16_t xyz[3], const sensor_real_t timeDelta) {
+				[&accelSamples](
+					const RawSensorT xyz[3],
+					const sensor_real_t timeDelta
+				) { accelSamples++; },
+				[&gyroSamples](const RawSensorT xyz[3], const sensor_real_t timeDelta) {
 					gyroSamples++;
-				}
+				},
+				[&temperatureSamples](
+					const int16_t value,
+					const sensor_real_t timeDelta
+				) { temperatureSamples++; }
 			);
 			yield();
 		}
@@ -577,43 +815,100 @@ public:
 		);
 		m_calibration.A_Ts = millisFromStart / (accelSamples * 1000.0);
 		m_calibration.G_Ts = millisFromStart / (gyroSamples * 1000.0);
+#if USE_NONBLOCKING_CALIBRATION
+		m_calibration.T_Ts = millisFromStart / (temperatureSamples * 1000.0);
+#endif
 
+#if !USE_NONBLOCKING_CALIBRATION
 		m_Logger.debug(
 			"Gyro frequency %fHz, accel frequency: %fHz",
 			1.0 / m_calibration.G_Ts,
 			1.0 / m_calibration.A_Ts
 		);
+#else
+		m_Logger.debug(
+			"Gyro frequency %fHz, accel frequency: %fHz, temperature frequency: %fHz",
+			1.0 / m_calibration.G_Ts,
+			1.0 / m_calibration.A_Ts,
+			1.0 / m_calibration.T_Ts
+		);
+#endif
 		ledManager.off();
 
 		// fusion needs to be recalculated
 		recalcFusion();
 	}
+#endif
 
 	SensorStatus getSensorState() override final { return m_status; }
 
 	SensorFusionRestDetect m_fusion;
 	T<I2CImpl> m_sensor;
+#if USE_NONBLOCKING_CALIBRATION
+	NonBlockingCalibration::NonBlockingCalibrator<imu, RawSensorT>
+		nonBlockingCalibrator;
+#endif
+
+#if !USE_NONBLOCKING_CALIBRATION
 	SlimeVR::Configuration::SoftFusionSensorConfig m_calibration
 		= {// let's create here transparent calibration that doesn't affect input data
 		   .ImuType = {imu::Type},
 		   .MotionlessDataLen = {MotionlessCalibDataSize()},
 		   .A_B = {0.0, 0.0, 0.0},
-		   .A_Ainv = {{1.0, 0.0, 0.0}, {0.0, 1.0, 0.0}, {0.0, 0.0, 1.0}},
+		   .A_Ainv
+		   = {{1.0, 0.0, 0.0},
+			  {0.0, 1.0, 0.0},
+			  { 0.0,
+				0.0,
+				1.0 }},
 		   .M_B = {0.0, 0.0, 0.0},
-		   .M_Ainv = {{1.0, 0.0, 0.0}, {0.0, 1.0, 0.0}, {0.0, 0.0, 1.0}},
+		   .M_Ainv
+		   = {{1.0, 0.0, 0.0},
+			  {0.0, 1.0, 0.0},
+			  { 0.0,
+				0.0,
+				1.0 }},
 		   .G_off = {0.0, 0.0, 0.0},
 		   .temperature = 0.0,
 		   .A_Ts = imu::AccTs,
 		   .G_Ts = imu::GyrTs,
 		   .M_Ts = imu::MagTs,
+		   .T_Ts = imu::TempTs,
 		   .G_Sens = {1.0, 1.0, 1.0},
 		   .MotionlessData = {}
 		};
+
+#else
+	SlimeVR::Configuration::NonBlockingSensorConfig m_calibration = {
+		// let's create here transparent calibration that doesn't affect input data
+		.ImuType = {imu::Type},
+		.MotionlessDataLen = {MotionlessCalibDataSize()},
+
+		.sensorTimestepsCalibrated = false,
+		.A_Ts = imu::AccTs,
+		.G_Ts = imu::GyrTs,
+		.M_Ts = imu::MagTs,
+		.T_Ts = imu::TempTs,
+
+		.motionlessCalibrated = false,
+		.MotionlessData = {},
+
+		.gyroPointsCalibrated = 0,
+		.gyroMeasurementTemperature1 = 0,
+		.G_off1 = {0.0, 0.0, 0.0},
+		.gyroMeasurementTemperature2 = 0,
+		.G_off2 = {0.0, 0.0, 0.0},
+
+		.accelCalibrated = {false, false, false},
+		.A_off = {0.0, 0.0, 0.0},
+	};
+#endif
 
 	SensorStatus m_status = SensorStatus::SENSOR_OFFLINE;
 	uint32_t m_lastPollTime = micros();
 	uint32_t m_lastRotationPacketSent = 0;
 	uint32_t m_lastTemperaturePacketSent = 0;
+	uint32_t m_lastTemperatureSampling = 0;
 };
 
 }  // namespace SlimeVR::Sensors

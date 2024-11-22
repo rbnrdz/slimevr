@@ -32,6 +32,9 @@
 #include "sensoraddresses.h"
 #include "softfusion/drivers/bmi270.h"
 #include "softfusion/drivers/icm42688.h"
+#include "softfusion/drivers/icm45605.h"
+#include "softfusion/drivers/icm45686.h"
+#include "softfusion/drivers/lsm6ds3.h"
 #include "softfusion/drivers/lsm6ds3trc.h"
 #include "softfusion/drivers/lsm6dso.h"
 #include "softfusion/drivers/lsm6dsr.h"
@@ -60,6 +63,12 @@ using SoftFusionLSM6DSR
 	= SoftFusionSensor<SoftFusion::Drivers::LSM6DSR, SoftFusion::I2CImpl>;
 using SoftFusionMPU6050
 	= SoftFusionSensor<SoftFusion::Drivers::MPU6050, SoftFusion::I2CImpl>;
+using SoftFusionLSM6DS3
+	= SoftFusionSensor<SoftFusion::Drivers::LSM6DS3, SoftFusion::I2CImpl>;
+using SoftFusionICM45686
+	= SoftFusionSensor<SoftFusion::Drivers::ICM45686, SoftFusion::I2CImpl>;
+using SoftFusionICM45605
+	= SoftFusionSensor<SoftFusion::Drivers::ICM45605, SoftFusion::I2CImpl>;
 
 // TODO Make it more generic in the future and move another place (abstract sensor
 // interface)
@@ -97,13 +106,12 @@ void SensorManager::setup() {
 	activeSDA = PIN_IMU_SDA;
 
 	uint8_t sensorID = 0;
-	uint8_t activeSensorCount = 0;
 #define IMU_DESC_ENTRY(ImuType, ...)                               \
 	{                                                              \
 		auto sensor = buildSensor<ImuType>(sensorID, __VA_ARGS__); \
 		if (sensor->isWorking()) {                                 \
 			m_Logger.info("Sensor %d configured", sensorID + 1);   \
-			activeSensorCount++;                                   \
+			m_ActiveSensorCount++;                                 \
 		}                                                          \
 		m_Sensors.push_back(std::move(sensor));                    \
 		sensorID++;                                                \
@@ -112,11 +120,12 @@ void SensorManager::setup() {
 	IMU_DESC_LIST;
 
 #undef IMU_DESC_ENTRY
-	m_Logger.info("%d sensor(s) configured", activeSensorCount);
+	m_Logger.info("%d sensor(s) configured", m_ActiveSensorCount);
 	// Check and scan i2c if no sensors active
-	if (activeSensorCount == 0) {
+	if (m_ActiveSensorCount == 0) {
 		m_Logger.error(
-			"Can't find I2C device on provided addresses, scanning for all I2C devices "
+			"Can't find I2C device on provided addresses, scanning for all I2C "
+			"devices "
 			"and returning"
 		);
 		I2CSCAN::scani2cports();

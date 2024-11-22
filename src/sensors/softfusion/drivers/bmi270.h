@@ -33,9 +33,9 @@
 
 namespace SlimeVR::Sensors::SoftFusion::Drivers {
 
-// Driver uses acceleration range at 16g
+// Driver uses acceleration range at 4g
 // and gyroscope range at 1000dps
-// Gyroscope ODR = 400Hz, accel ODR = 100Hz
+// Gyroscope ODR = 400Hz, accel ODR = 200Hz
 // Timestamps reading are not used
 
 template <typename I2CImpl>
@@ -45,12 +45,30 @@ struct BMI270 {
 	static constexpr auto Type = ImuID::BMI270;
 
 	static constexpr float GyrTs = 1.0 / 400.0;
-	static constexpr float AccTs = 1.0 / 100.0;
+	static constexpr float AccTs = 1.0 / 200.0;
+	static constexpr float TempTs = 1.0 / 15.0;
 
 	static constexpr float MagTs = 1.0 / 100;
 
 	static constexpr float GyroSensitivity = 32.768f;
-	static constexpr float AccelSensitivity = 2048.0f;
+	static constexpr float AccelSensitivity = 8192.0f;
+
+	// Temperature stability constant - how many degrees of temperature for the bias to
+	// change by 0.01 Though I don't know if it should be 0.1 or 0.01, this is a guess
+	// and seems to work better than 0.1
+	static constexpr float TemperatureZROChange = 6.667f;
+
+	// VQF parameters
+	// biasSigmaInit and and restThGyr should be the sensor's typical gyro bias
+	// biasClip should be 2x the sensor's typical gyro bias
+	// restThAcc should be the sensor's typical acceleration bias
+	static constexpr VQFParams SensorVQFParams{
+		.motionBiasEstEnabled = true,
+		.biasSigmaInit = 0.5f,
+		.biasClip = 1.0f,
+		.restThGyr = 0.5f,
+		.restThAcc = 0.196f,
+	};
 
 	struct MotionlessCalibrationData {
 		bool valid;
@@ -165,7 +183,7 @@ struct BMI270 {
 			static constexpr uint8_t filterHighPerfMode = 1 << 7;
 
 			static constexpr uint8_t value
-				= rate100Hz | DLPFModeAvg4 | filterHighPerfMode;
+				= rate200Hz | DLPFModeAvg4 | filterHighPerfMode;
 		};
 
 		struct AccRange {
@@ -176,7 +194,7 @@ struct BMI270 {
 			static constexpr uint8_t range8G = 2;
 			static constexpr uint8_t range16G = 3;
 
-			static constexpr uint8_t value = range16G;
+			static constexpr uint8_t value = range4G;
 		};
 
 		struct FifoConfig0 {
@@ -314,7 +332,7 @@ struct BMI270 {
 		return true;
 	}
 
-	void motionlessCalibration(MotionlessCalibrationData& gyroSensitivity) {
+	bool motionlessCalibration(MotionlessCalibrationData& gyroSensitivity) {
 		// perfrom gyroscope motionless sensitivity calibration (CRT)
 		// need to start from clean state according to spec
 		restartAndInit();
@@ -364,6 +382,8 @@ struct BMI270 {
 		}
 
 		setNormalConfig(gyroSensitivity);
+
+		return status == 0;
 	}
 
 	float getDirectTemp() const {
@@ -386,8 +406,12 @@ struct BMI270 {
 		return to_ret;
 	}
 
-	template <typename AccelCall, typename GyroCall>
-	void bulkRead(AccelCall&& processAccelSample, GyroCall&& processGyroSample) {
+	template <typename AccelCall, typename GyroCall, typename TemperatureCall>
+	void bulkRead(
+		AccelCall&& processAccelSample,
+		GyroCall&& processGyroSample,
+		TemperatureCall&& processTemperatureSample
+	) {
 		const auto fifo_bytes = i2c.readReg16(Regs::FifoCount);
 
 		const auto bytes_to_read = std::min(
@@ -404,6 +428,9 @@ struct BMI270 {
 					break;
 				}
 				getFromFifo<uint8_t>(i, read_buffer);  // skip 1 byte
+				logger.error(
+					"FIFO OVERRUN! This occuring during normal usage is an issue."
+				);
 			} else if ((header & Fifo::ModeMask) == Fifo::DataFrame) {
 				uint8_t gyro_data_length = header & Fifo::GyrDataBit ? 6 : 0;
 				uint8_t accel_data_length = header & Fifo::AccelDataBit ? 6 : 0;

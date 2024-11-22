@@ -151,9 +151,9 @@ void WiFiNetwork::upkeep() {
 				case SLIME_WIFI_SAVED_ATTEMPT:  // Couldn't connect with first set of
 												// credentials
 #if ESP8266
-					// Try again but with 11G but only if there are credentials,
-					// otherwise we just waste time before switching to hardcoded
-					// credentials.
+					// Try again but with 11G
+					// But only if there are credentials, otherwise we just waste time
+					// before switching to hardcoded credentials.
 					if (WiFi.SSID().length() > 0) {
 #if USE_ATTENUATION
 						WiFi.setOutputPower(20.0 - ATTENUATION_G);
@@ -180,7 +180,7 @@ void WiFiNetwork::upkeep() {
 				case SLIME_WIFI_SAVED_G_ATTEMPT:  // Couldn't connect with first set of
 												  // credentials with PHY Mode G
 #if defined(WIFI_CREDS_SSID) && defined(WIFI_CREDS_PASSWD)
-												  // Try hardcoded credentials now
+					//  Try hardcoded credentials now
 #if ESP8266
 #if USE_ATTENUATION
 					WiFi.setOutputPower(20.0 - ATTENUATION_N);
@@ -201,8 +201,8 @@ void WiFiNetwork::upkeep() {
 				case SLIME_WIFI_HARDCODE_ATTEMPT:  // Couldn't connect with second set
 												   // of credentials
 #if defined(WIFI_CREDS_SSID) && defined(WIFI_CREDS_PASSWD) && ESP8266
-												   // Try hardcoded credentials again,
-												   // but with PHY Mode G
+					//  Try hardcoded credentials again, but with PHY
+					// Mode G
 #if USE_ATTENUATION
 					WiFi.setOutputPower(20.0 - ATTENUATION_G);
 #endif
@@ -223,7 +223,7 @@ void WiFiNetwork::upkeep() {
 				case SLIME_WIFI_SERVER_CRED_ATTEMPT:  // Couldn't connect with
 													  // server-sent credentials.
 #if ESP8266
-													  // Try again silently but with 11G
+					//  Try again silently but with 11G
 #if USE_ATTENUATION
 					WiFi.setOutputPower(20.0 - ATTENUATION_G);
 #endif

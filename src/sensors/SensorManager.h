@@ -53,10 +53,13 @@ public:
 		return ImuID::Unknown;
 	}
 
+	uint8_t getActiveSensorCount() { return m_ActiveSensorCount; }
+
 private:
 	SlimeVR::Logging::Logger m_Logger;
 
 	std::vector<std::unique_ptr<Sensor>> m_Sensors;
+	uint8_t m_ActiveSensorCount = 0;
 
 	template <typename ImuType>
 	std::unique_ptr<Sensor> buildSensor(

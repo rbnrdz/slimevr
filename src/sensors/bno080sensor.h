@@ -44,14 +44,14 @@ public:
 		uint8_t intPin
 	)
 		: Sensor(
-			"BNO080Sensor",
-			ImuID::BNO080,
-			id,
-			Address + addrSuppl,
-			rotation,
-			sclPin,
-			sdaPin
-		)
+			  "BNO080Sensor",
+			  ImuID::BNO080,
+			  id,
+			  Address + addrSuppl,
+			  rotation,
+			  sclPin,
+			  sdaPin
+		  )
 		, m_IntPin(intPin){};
 	~BNO080Sensor(){};
 	void motionSetup() override final;
@@ -109,15 +109,15 @@ public:
 		uint8_t intPin
 	)
 		: BNO080Sensor(
-			"BNO085Sensor",
-			ImuID::BNO085,
-			id,
-			address,
-			rotation,
-			sclPin,
-			sdaPin,
-			intPin
-		){};
+			  "BNO085Sensor",
+			  ImuID::BNO085,
+			  id,
+			  address,
+			  rotation,
+			  sclPin,
+			  sdaPin,
+			  intPin
+		  ){};
 };
 
 class BNO086Sensor : public BNO080Sensor {
@@ -132,15 +132,15 @@ public:
 		uint8_t intPin
 	)
 		: BNO080Sensor(
-			"BNO086Sensor",
-			ImuID::BNO086,
-			id,
-			address,
-			rotation,
-			sclPin,
-			sdaPin,
-			intPin
-		){};
+			  "BNO086Sensor",
+			  ImuID::BNO086,
+			  id,
+			  address,
+			  rotation,
+			  sclPin,
+			  sdaPin,
+			  intPin
+		  ){};
 };
 
 #endif

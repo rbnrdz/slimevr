@@ -34,10 +34,10 @@ public:
 		: Sensor("EmptySensor", ImuID::Empty, id, 0, 0.0){};
 	~EmptySensor(){};
 
-	void motionSetup() override final{};
-	void motionLoop() override final{};
-	void sendData() override final{};
-	void startCalibration(int calibrationType) override final{};
+	void motionSetup() override final {};
+	void motionLoop() override final {};
+	void sendData() override final {};
+	void startCalibration(int calibrationType) override final {};
 	SensorStatus getSensorState() override final {
 		return SensorStatus::SENSOR_OFFLINE;
 	};
